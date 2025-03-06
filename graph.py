@@ -101,9 +101,6 @@ async def agent_node(state: AgentState, config: RunnableConfig):
 
 
 async def tool_node(state: AgentState):
-    # main_logger.info("GETTING Loop in TOOL NODE")
-    # tool_node_loop = asyncio.get_event_loop()
-    # main_logger.info(f"Loop in tool_node: {tool_node_loop}")
     outputs = []
     for action in list(state["intermediate_steps"]):
         tool_name = action.tool
@@ -178,12 +175,6 @@ async def process_input(user_input: str, account_id: str, is_interrupted: bool =
         "response": ""
     }
 
-    # response = await gemini_model.ainvoke(user_input)
-    # response = response.content
-    # main_logger.info(f"Response: {response}")
-    # is_interrupted = False
-    # return response, is_interrupted
-
     if is_interrupted:
         inputs = Command(resume=user_input)
 
@@ -193,7 +184,6 @@ async def process_input(user_input: str, account_id: str, is_interrupted: bool =
     )
 
     async for event in events:
-        # main_logger.info(f"Event: {event}")
         sys.stdout.flush()
         if event.get("__interrupt__", None):
             is_interrupted = True
