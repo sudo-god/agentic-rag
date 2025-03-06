@@ -19,32 +19,34 @@ import yaml
 from supabase import create_client, Client
 import google.generativeai as genai
 import numpy as np
+from typing import Optional, TypedDict, Annotated, List, Union
 
+
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.memory import MemorySaver
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langgraph.types import interrupt, Command
+from langgraph.graph.message import add_messages
+ 
 
 
 load_dotenv()
+
 main_logger = logging.getLogger('main')
 
 executor = concurrent.futures.ThreadPoolExecutor(max_workers=20, thread_name_prefix=__name__)
 
-model = GeminiModel('gemini-2.0-flash-exp')
-# openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-openai_client = None
-genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 supabase = create_client(
     os.getenv("SUPABASE_URL"),
     os.getenv("SUPABASE_SERVICE_KEY")
 )
 
+helper_model = ChatGoogleGenerativeAI(model="gemini-2.0-flash-exp", google_api_key=GEMINI_API_KEY)
 
-@dataclass
-class ExtractionDeps:
-    source_name: str
-    url: str
-    chunk_number: int
-    gemini_client: genai
-    openai_client: AsyncOpenAI
-    use_gemini: bool = True
+
+## =============== Defining the dataclass ===============
 
 
 @dataclass
@@ -59,6 +61,23 @@ class TransformedChunk:
     content: str = Field(description='Exact content of the text chunk')
     embedding: List[float] = Field(description='Embedding vector of the text chunk')
 
+
+## =============== Defining the helper agent ===============
+
+helper_agent_prompt = ChatPromptTemplate.from_messages([
+    ("system", (
+        'Extract the title and summary from the chunk of text.'
+        'The title should be the document title if the chunk_number is 0, or a sub-title if the chunk is a sub-section of the document.'
+        'If no title or subtitle is present, derive a short title from the text chunk.'
+        'The summary should provide a brief overview of the text chunk.'
+        'Return a JSON object with "title" and "summary" keys.'
+    )),
+    ("user", "{user_input}"),
+])
+helper_agent = (helper_agent_prompt | helper_model)
+
+
+## =============== Constructing etl functions ===============
 
 def chunk_text(text: str, chunk_size: int) -> List[str]:
     """ Chunk a text document into smaller parts, intelligently
@@ -81,7 +100,7 @@ def chunk_text(text: str, chunk_size: int) -> List[str]:
         if end >= text_length:
             chunks.append(chunk)
             break
-
+ 
         if "```" in chunk:
             new_end = chunk.rfind("```")
         elif "\n\n" in chunk:
@@ -99,37 +118,6 @@ def chunk_text(text: str, chunk_size: int) -> List[str]:
     return chunks
 
 
-text_extraction_agent = Agent(
-    model=model,
-    system_prompt=(
-            # 'You are an AI agent that constructs the TransformedChunk object, from the given text chunk as a prompt.'
-            'Extract the title and summary from the chunk of text.'
-            'The title should be the document title if the chunk_number is 0, or a sub-title if the chunk is a sub-section of the document.'
-            'If no title or subtitle is present, derive a short title from the text chunk.'
-            'The summary should provide a brief overview of the text chunk.'
-            'Return a JSON object with "title" and "summary" keys.'
-            # 'Use the `get_embeddings` tool to get the embedding vector for the text chunk, and return the TransformedChunk object.'
-    ),
-    deps_type=ExtractionDeps,
-    result_type=str,
-    retries=3
-)
-
-
-@text_extraction_agent.system_prompt
-def dynamic_system_prompt(ctx: RunContext[ExtractionDeps]) -> str:
-    return f"Other necessary information to build TransformedChunk; source_name: `{ctx.deps.source_name}`, url: `{ctx.deps.url}`, chunk_number: `{ctx.deps.chunk_number}`."
-
-
-@text_extraction_agent.result_validator
-def validate_result(ctx: RunContext[ExtractionDeps], result: str) -> dict:
-    try:
-        transformed_chunk = json.loads(result[result.find("{"):result.rfind("}")+1])
-        return transformed_chunk
-    except Exception as e:
-        raise ModelRetry(f"Error validating result: {e}")
-
-@text_extraction_agent.tool_plain
 async def get_embeddings(text_chunk: str, is_document: bool = True) -> List[float]:
     """Get the embedding vector for the text chunk.
     """
@@ -180,13 +168,16 @@ async def transform_text_doc(url: str | None, source_name: str, text: str, build
         if not chunk:
             main_logger.debug("Empty chunk")
             continue
-        embedding = await get_embeddings(chunk)
-        dependency = ExtractionDeps(source_name=source_name, url=url, chunk_number=i, gemini_client=genai, openai_client=openai_client, use_gemini=True)
         if "csv" in source_name:
             transformed_chunk = {"title": source_name, "summary": "CSV Data"}
         else:
-            transformed_chunk = (await text_extraction_agent.run(chunk, deps=dependency)).data
+            helper_agent_inputs = {
+                "user_input": chunk,
+            }
+            transformed_chunk = helper_agent.invoke(helper_agent_inputs)
             print(f"Transformed chunk: {transformed_chunk}")
+        
+        embedding = await get_embeddings(chunk)
         transformed_chunk = TransformedChunk(
             source_name=source_name,
             url=url,
@@ -207,7 +198,6 @@ async def transform_text_doc(url: str | None, source_name: str, text: str, build
 
 def load_text_doc(chunks: List[TransformedChunk]):
     """Insert a processed chunk into Supabase."""
-
     rows = [asdict(chunk) for chunk in chunks]
     try:
         result = supabase.table("agentic_rag").insert(rows).execute()
@@ -240,6 +230,16 @@ async def etl_from_url(urls: dict):
         else:
             main_logger.error(f"Failed: {url} - Error: {result.error_message}")
         
+
+async def match_query_embedding(prompt: str, index: faiss.IndexFlatIP, transformed_chunks: List[TransformedChunk]) -> str:
+    top_k =10
+    query_embedding = np.array(await get_embeddings(prompt, is_document=False), dtype=np.float32).reshape(1, -1)
+    faiss.normalize_L2(query_embedding)
+    _, I = index.search(query_embedding, top_k)
+    print(f"Top {top_k} matches: {I}")
+    matched_chunks = [transformed_chunks[i].content for i in I[0] if i >= 0]
+    return "\n\n".join(matched_chunks)
+
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@ import fs
 from dotenv import load_dotenv
 import pandas as pd
 import docx
-from .etl_new import TransformedChunk, transform_text_doc, get_embeddings
+from .etl import TransformedChunk, transform_text_doc, get_embeddings
 from llama_index.core import Settings, VectorStoreIndex, StorageContext, load_index_from_storage
 from llama_index.core.node_parser import SentenceSplitter
 from llama_index.core.extractors import (

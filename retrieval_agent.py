@@ -16,7 +16,7 @@ import logging.config
 import yaml
 from supabase import create_client, Client
 import google.generativeai as genai
-import etl
+import etl_old
 from streamlit.runtime.uploaded_file_manager import UploadedFile
 import PyPDF2
 import docx
@@ -52,24 +52,24 @@ class AttachmentProcessor:
             page = pdf_reader.pages[page_num]
             text += page.extract_text() + "\n"
 
-        self.transformed_chunks = await etl.transform_text_doc(url=None, source_name=self.attachment.name, text=text, build_index=True, index=self.index)
+        self.transformed_chunks = await etl_old.transform_text_doc(url=None, source_name=self.attachment.name, text=text, build_index=True, index=self.index)
     
     async def parse_txt(self):
         text = self.attachment.read().decode()
-        self.transformed_chunks = await etl.transform_text_doc(url=None, source_name=self.attachment.name, text=text, build_index=True, index=self.index)
+        self.transformed_chunks = await etl_old.transform_text_doc(url=None, source_name=self.attachment.name, text=text, build_index=True, index=self.index)
 
     async def parse_csv(self):
         # df = pd.read_csv(attachment)
         # text = df.to_string()
         text = self.attachment.read().decode()
-        self.transformed_chunks = await etl.transform_text_doc(url=None, source_name=self.attachment.name, text=text, build_index=True, index=self.index)
+        self.transformed_chunks = await etl_old.transform_text_doc(url=None, source_name=self.attachment.name, text=text, build_index=True, index=self.index)
 
     async def parse_doc(self):
         doc = docx.Document(self.attachment)
         text = ""
         for para in doc.paragraphs:
             text += para.text
-        self.transformed_chunks = await etl.transform_text_doc(url=None, source_name=self.attachment.name, text=text, build_index=True, index=self.index)
+        self.transformed_chunks = await etl_old.transform_text_doc(url=None, source_name=self.attachment.name, text=text, build_index=True, index=self.index)
 
     async def parse_image(self):
         pass
@@ -77,7 +77,7 @@ class AttachmentProcessor:
 
 async def match_query_embedding(processor: AttachmentProcessor, prompt: str) -> str:
     top_k = 10
-    query_embedding = np.array(await etl.get_embeddings(prompt, is_document=False), dtype=np.float32).reshape(1, -1)
+    query_embedding = np.array(await etl_old.get_embeddings(prompt, is_document=False), dtype=np.float32).reshape(1, -1)
     faiss.normalize_L2(query_embedding)
     _, I = processor.index.search(query_embedding, top_k)
     print(f"Top {top_k} matches: {I}")
@@ -228,7 +228,7 @@ async def query_database(ctx: RunContext[RetrievalAgentDeps]) -> str:
     # try:
     user_query = ctx.messages[-1].parts[-1].content
     print(f"User query: {user_query}")
-    query_embedding = await etl.get_embeddings(user_query, is_document=False)
+    query_embedding = await etl_old.get_embeddings(user_query, is_document=False)
     print(f"Source names: {source_names}")
     print(f"URLs: {unique_urls}")
     # get the most relevant content from the table
@@ -283,7 +283,7 @@ async def query_database(ctx: RunContext[RetrievalAgentDeps]) -> str:
 #     # try:
 #     user_query = ctx.messages[-1].parts[-1].content
 #     print(f"User query: {user_query}")
-#     query_embedding = await etl.get_embeddings(user_query)
+#     query_embedding = await etl_old.get_embeddings(user_query)
 #     # get the most relevant content from the table
 #     relevant_content = ctx.deps.supabase.rpc(
 #         'match_agentic_rag',
