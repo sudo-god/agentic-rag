@@ -15,8 +15,11 @@ streamlit
 PyPDF2
 python-docx
 llama-index
-lama-index-llms-gemini
+llama-index-llms-gemini
 llama-index-embeddings-gemini
 llama-parse
+llama-index-extractors-entity
+llama-index-postprocessor-cohere-rerank
+fs
 
 faiss-cpu

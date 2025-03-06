@@ -22,14 +22,9 @@ handlers:
     formatter: simple
     filename: 'log/application.log'
 
-  logfire_log:
-    class: logfire.LogfireLoggingHandler
-    formatter: simple
-
 loggers:
   main:
     level: DEBUG
     handlers:
-      # - console
+      - console
       - main_logs_file
-      - logfire_log

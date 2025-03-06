@@ -1,35 +1,25 @@
 import asyncio
-import json
+
+import nest_asyncio
+nest_asyncio.apply()
+
 import os
-from dataclasses import dataclass
 from typing import List, Literal, TypedDict
 from dotenv import load_dotenv
-import pandas as pd
-from pydantic_ai import Agent, RunContext, ModelRetry
-from pydantic import BaseModel, Field
-from openai import AsyncOpenAI
-from pydantic_ai.models.gemini import GeminiModel
-from pydantic_ai.messages import (
-    ModelMessage,
-    ModelRequest,
-    ModelResponse,
-    SystemPromptPart,
-    UserPromptPart,
-    TextPart,
-    ToolCallPart,
-    ToolReturnPart,
-    RetryPromptPart,
-    ModelMessagesTypeAdapter
-)
 import logfire
 import logging
 import logging.config
 import yaml
-from supabase import create_client, Client
-import google.generativeai as genai
-from retrieval_agent import retrieval_agent, helper_agent, RetrievalAgentDeps, process_attachment, AttachmentProcessor
+from supabase import create_client
 import streamlit as st
-
+from attachment_processor import AttachmentProcessor, AttachmentProcessors
+from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
+    UserPromptPart,
+    TextPart
+)
+from graph import process_input, add_to_store
 
 
 load_dotenv()
@@ -74,44 +64,32 @@ def display_message_part(part):
             st.markdown(part.content)
 
 
-async def invoke_agent(prompt: str, attachment_processors: List[AttachmentProcessor] = None):
+def invoke_agent(prompt: str, account_id: str):
     print(f"INVOKE AGENT PROMPT: {prompt}")
-    async with retrieval_agent.run_stream(prompt, deps=RetrievalAgentDeps(supabase, attachment_processors), message_history=st.session_state.message_history) as result:
-        partial_text = ""
-        structured_data = ""
-        message_placeholder = st.empty()
-        async for chunk in result.stream_text(delta=True):
-            index = chunk.find('```')
-            if index != -1:
-                if structured_data == "":
-                    structured_data += chunk[index:]
-                    partial_text += chunk[:index]
-                else:
-                    structured_data += chunk[:index+1]
-                    partial_text += chunk[index+1:]
-                    print(f"Structured data: {structured_data}")
-                    st.table(pd.dataframe(json.loads(structured_data[structured_data.find('['):structured_data.rfind(']')+1])))
-                    # message_placeholder.markdown(structured_data)
-                    structured_data = ""
-            else:
-                partial_text += chunk                
-            message_placeholder.markdown(partial_text)
+    query_response = process_input(prompt, account_id, False)
+    print(f"Streamlit received data: {query_response}")
 
-        print(f"Streamlit received data: {partial_text}")
-
-        # Add the final response to the messages
-        st.session_state.message_history.append(
-            ModelResponse(parts=[TextPart(content=partial_text)])
-        )
+    # Add the final response to the messages
+    st.session_state.message_history.append(
+        ModelResponse(parts=[TextPart(content=query_response)])
+    )
 
 
-async def main():
-    st.title("Dixit's agentic RAG")
+def main():
+    st.title("Dixit's RAG application")
     st.write("Ask me a question about {{something}}. You can provide a url, text document or an image as additional information source.")
 
     # Initialize chat history in session state if not present
     if "message_history" not in st.session_state:
         st.session_state.message_history = []
+
+    if "account_id" not in st.session_state:
+        st.session_state.account_id = "account_id_1"
+    
+    if "attachment_processors" not in st.session_state:
+        st.session_state.attachment_processors = AttachmentProcessors()
+        namespace = ("attachment_processors", st.session_state.account_id)
+        add_to_store(namespace, "attachment_processors", st.session_state.attachment_processors)
 
     if "attachments_processed" not in st.session_state:
         st.session_state.attachments_processed = {}
@@ -121,7 +99,6 @@ async def main():
             for part in msg.parts:
                 display_message_part(part)
 
-    # prompt = st.chat_input("Ask me...")
     prompt = st.chat_input("Ask me...")
     attachments = st.file_uploader("Upload a file.", type=("txt", "csv", "md", "pdf", "jpg", "jpeg", "png"), accept_multiple_files=True)
     
@@ -130,13 +107,14 @@ async def main():
         for attachment in attachments:
             if attachment.file_id not in st.session_state.attachments_processed:
                 with st.spinner("Processing attached document..."):
-                    processor = await process_attachment(attachment=attachment)
+                    processor = AttachmentProcessor(attachment)
+                    processor.process()
+                    st.session_state.attachment_processors.add_attachment(processor)
                     st.session_state.attachments_processed[attachment.file_id] = processor
                 if once:
                     st.success("Successfully processed attached document.")
                     once = False
 
-    
     for file_id in list(st.session_state.attachments_processed.keys()):
         found = False
         for attachment in attachments:
@@ -144,7 +122,7 @@ async def main():
                 found = True
         if not found:
             st.session_state.attachments_processed.pop(file_id)
-
+            st.session_state.attachment_processors.remove_attachment(st.session_state.attachments_processed[file_id])
 
     if prompt:
         st.session_state.message_history.append(
@@ -159,14 +137,21 @@ async def main():
             # Actually run the agent now, streaming the text
             print("INVOKING AGENT")
             with st.spinner("Thinking..."):
-                await invoke_agent(prompt, list(st.session_state.attachments_processed.values()))
+                invoke_agent(prompt, st.session_state.account_id)
             print("INVOKE CALL RETURNED")
     # print(f"STATE: {st.session_state}")
 
 
 if __name__ == "__main__":
     # asyncio.run(main())
-    if not hasattr(st.session_state, "loop"):
-        st.session_state.loop = asyncio.new_event_loop()
-    st.session_state.loop.run_until_complete(main())
+    # if not hasattr(st.session_state, "loop"):
+    #     st.session_state.loop = asyncio.new_event_loop()
+    # st.session_state.loop.run_until_complete(main())
+    # try:
+    #     loop = asyncio.new_event_loop()
+    #     asyncio.set_event_loop(loop)
+    #     loop.run_until_complete(main())
+    # finally:
+    #     loop.close()
 
+    main()
